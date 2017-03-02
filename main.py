@@ -12,8 +12,8 @@ from seq2seq.models import AttentionSeq2Seq, SimpleSeq2Seq
 # numbers of unique words in all queries and responses
 QUERY_MAPPING_SIZE = 0
 RESPONSE_MAPPING_SIZE = 0
-SEQUENCE_LENGTH = 100
-BATCH_SIZE = 32
+SEQUENCE_LENGTH = 5
+BATCH_SIZE = 1
 LOAD_PRIOR_MODEL = False
 
 #======================================
@@ -449,7 +449,7 @@ def put_pairs_in_buckets(tokenized_pairs):
 				break
 	return data
 
-def pad_pairs(tokenized_pairs,max_len=100):
+def pad_pairs(tokenized_pairs,max_len=100,trim_under=False):
 	# pads all pairs up to a specified length
 	print("Padding pairs up to "+str(max_len)+"...")
 	x = []
@@ -461,6 +461,8 @@ def pad_pairs(tokenized_pairs,max_len=100):
 		if len(query)==max_len: x.append(query)
 		elif len(query)>max_len: x.append(query[:max_len])
 		else:
+			if trim_under:
+				continue
 			while len(query)!=max_len:
 				query.append(12000)
 			x.append(query)
@@ -468,29 +470,102 @@ def pad_pairs(tokenized_pairs,max_len=100):
 		if len(response)==max_len: y.append(response)
 		elif len(response)>max_len: y.append(query[:max_len])
 		else:
+			if trim_under:
+				del x[-1]
+				continue
 			while len(response)!=max_len:
 				response.append(12000)
 			y.append(response)
 		i+=1
 	print("\nFinished padding pairs.")
 
+	'''
 	x_list = []
 	y_list = []
 	for query,response in list(zip(x,y)):
 		x_list.append(np.array(query))
 		y_list.append(np.array(response))
+	'''
+
+	x_list = np.empty([len(x),max_len,1])
+	y_list = np.empty([len(y),max_len,1])
+
+	for cur_x,cur_y in list(zip(x,y)):
+		k = x.index(cur_x)
+
+		for i,j in list(zip(cur_x,cur_y)):
+			l = cur_x.index(i)
+			x_list[k][l][0] = int(i)
+			y_list[k][l][0] = int(j)
+
+	return x_list,y_list
+
+
+
+	x_list = np.empty([len(x),1,max_len])
+	y_list = np.empty([len(x),1,max_len])
+
+	for cur_x,cur_y in list(zip(x,y)):
+		temp_x = np.array(cur_x)
+		temp_y = np.array(cur_y)
+
+		x_list[x.index(cur_x)][0] = temp_x
+		y_list[y.index(cur_y)][0] = temp_y 
+
+	return x_list,y_list
 	
+	x_list = np.array(x)
+	y_list = np.array(y)
+
 	return x_list,y_list 
+
+def pad(query,trim_under=False):
+	
+	x = []
+	max_len = SEQUENCE_LENGTH
+	
+	if len(query)==max_len: x.append(query)
+	elif len(query)>max_len: x.append(query[:max_len])
+	else:
+		while len(query)!=max_len:
+			query.append(12000)
+		x.append(query)	
+	
+	#x=query
+	xarr = np.empty([1,max_len,1])
+	for i in x[0]:
+		xarr[0][x.index(i)][0] = int(i)
+
+	#x0 = np.array(x)
+	#xarr[0][0] = x0
+	return xarr
+
+def get_id_from_word(query,mapping):
+	for word,word_id in mapping:
+		if word==query:
+			return int(word_id)
+	return -1
+
+def convert_sentence_to_ids(sentence,mapping):
+	sentence = sentence.lower().split(" ")
+	ids = []
+	for word in sentence:
+		cur_id = get_id_from_word(word,mapping)
+		if cur_id!=-1:
+			ids.append(cur_id)
+		else:
+			print("Dropped "+word+", not in dictionary.")
+	return ids
 
 def main():
 	filename = "data/messages.htm"
 	tokenized_pairs,mappings = get_data(filename,verbose=False,load_prior=True)
-	x,y = pad_pairs(tokenized_pairs,SEQUENCE_LENGTH)
+	x,y = pad_pairs(tokenized_pairs,SEQUENCE_LENGTH,trim_under=True)
 
 	input_length = SEQUENCE_LENGTH
 	output_length = SEQUENCE_LENGTH
-	input_dim = len(x)
-	output_dim = len(y)
+	input_dim = 1
+	output_dim = 1
 
 	if LOAD_PRIOR_MODEL:
 		print("Loading model...")
@@ -498,21 +573,54 @@ def main():
 	else:
 		print("Building model...")
 		model = Sequential()
+		'''
 		seqtoseq = SimpleSeq2Seq(
-			input_dim = input_dim,
-			input_length = input_length,
-			output_dim=output_dim,
-			output_length=output_length,
-			depth=1
+			output_dim = 1,
+			output_length = SEQUENCE_LENGTH,
+			batch_input_shape=(BATCH_SIZE,SEQUENCE_LENGTH,1),
+			depth=3
 			)
+		'''
+		seqtoseq = AttentionSeq2Seq(
+			output_dim = 1,
+			output_length = SEQUENCE_LENGTH,
+			batch_input_shape=(BATCH_SIZE,SEQUENCE_LENGTH,1),
+			depth = 1
+			)
+		
 		model.add(seqtoseq)
 		print("Compiling model...")
 		model.compile(loss='mse',optimizer='sgd')
 	
+
 	print("Fitting model...")
-	model.fit(x,y,batch_size=BATCH_SIZE,nb_epoch=1,show_accuracy=True,verbose=1)
+	model.fit(x,y,batch_size=BATCH_SIZE,nb_epoch=1)
+	'''
+	for i in range(int(len(x)/BATCH_SIZE)):
+		print("Dataset "+(str(i)))
+
+		cur_x = np.empty([BATCH_SIZE,1,SEQUENCE_LENGTH])
+		cur_y = np.empty([BATCH_SIZE,1,SEQUENCE_LENGTH])
+
+		for j in range(BATCH_SIZE):
+			cur_x[j][0] = x[i*BATCH_SIZE+j][0]
+			cur_y[j][0] = y[i*BATCH_SIZE+j][0]
+
+		model.fit(cur_x,cur_y,batch_size=BATCH_SIZE,nb_epoch=5)
+
+	'''
+	#model.fit(x,y,batch_size=BATCH_SIZE,nb_epoch=5)
+	#model.fit(x,y,batch_size=len(x),nb_epoch=1,show_accuracy=True,verbose=1)
 	print("Saving model...")
 	model.save("data/model.h5")
+
+	while True:
+		query = input("You: ")
+		if query=="exit":
+			break
+		query = convert_sentence_to_ids(query,mappings)
+		response = model.predict(pad(query))
+		print(response)
 
 	print("\nDone.")
 
